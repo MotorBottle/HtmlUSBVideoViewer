@@ -1,98 +1,148 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-<meta charset="utf-8" />
-<title>USB / UVC 采集卡预览</title>
+<meta charset="utf-8">
+<title>UVC 采集卡预览</title>
 <style>
-    body{margin:0;font-family:system-ui,Helvetica,Arial,sans-serif;background:#101010;color:#eaeaea;display:flex;flex-direction:column;height:100vh}
-    #controls{display:flex;gap:8px;padding:8px;background:#222;align-items:center;flex-wrap:wrap}
-    select,button{padding:6px 10px;font-size:14px;border-radius:4px;border:none}
-    button{cursor:pointer;background:#2964ff;color:#fff}
-    button:hover{background:#1e54e6}
-    video{flex:1 1 auto;width:100%;height:100%;object-fit:contain;background:#000}
+  html,body{margin:0;height:100%;background:#000;font-family:system-ui,Helvetica,Arial,sans-serif;color:#eaeaea}
+  #controls{position:fixed;top:0;left:0;width:100%;display:flex;gap:8px;align-items:center;flex-wrap:wrap;
+            padding:8px;background:#222;transition:opacity .25s;z-index:1000}
+  label,select,button{font-size:14px}
+  select,button{padding:6px 10px;border:none;border-radius:4px}
+  button{cursor:pointer;background:#2964ff;color:#fff}
+  button:hover{background:#1e54e6}
+  video{position:absolute;top:0;left:0;width:100%;height:100%;object-fit:contain}
 </style>
 </head>
 <body>
-    <div id="controls">
-        <label for="videoSource">视频输入源：</label>
-        <select id="videoSource"></select>
-        <button id="fullScreenBtn">进入全屏</button>
-    </div>
- 
-    <video id="video" autoplay playsinline></video>
- 
+  <div id="controls">
+    <label>设备:</label><select id="devSel"></select>
+    <label>分辨率:</label><select id="resSel"></select>
+    <label>FPS:</label><select id="fpsSel"></select>
+    <button id="refreshBtn">刷新设备</button>
+    <button id="fsBtn">进入全屏</button>
+  </div>
+  <video id="video" autoplay playsinline></video>
+
 <script>
 (async () => {
-    // DOM
-    const video   = document.getElementById('video');
-    const select  = document.getElementById('videoSource');
-    const fsBtn   = document.getElementById('fullScreenBtn');
-    const SAVEKEY = 'selectedDeviceId';
- 
-    // 1. 确保支持
-    if (!navigator.mediaDevices?.enumerateDevices) {
-        alert('当前浏览器不支持 WebRTC，无法访问摄像头');
-        return;
+  /* ---------- DOM ---------- */
+  const $ = id => document.getElementById(id);
+  const devSel = $('devSel'), resSel = $('resSel'), fpsSel = $('fpsSel');
+  const refreshBtn = $('refreshBtn'), fsBtn = $('fsBtn'), controls = $('controls'), video = $('video');
+  const COMMON = [[1920,1080],[1280,720],[720,480],[640,480]];
+  let hideTimer = null;
+
+  /* ---------- 权限 ---------- */
+  if (!navigator.mediaDevices?.enumerateDevices) {
+    alert('浏览器不支持 WebRTC'); return;
+  }
+  try { await navigator.mediaDevices.getUserMedia({ video: true }); }
+  catch (e) { alert('需要摄像头权限'); throw e; }
+
+  /* ---------- 列设备 ---------- */
+  async function listDevices() {
+    const cams = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput');
+    devSel.innerHTML = '';
+    cams.forEach((c, i) => devSel.add(new Option(c.label || `Camera ${i+1}`, c.deviceId)));
+    if (!cams.length) { alert('未检测到摄像头'); return; }
+    devSel.selectedIndex = 0;
+    await buildResFPS();
+  }
+
+  /* ---------- 分辨率 & FPS ---------- */
+  async function buildResFPS() {
+    resSel.innerHTML = ''; fpsSel.innerHTML = '';
+    const id = devSel.value; if (!id) return;
+
+    const tmp = await navigator.mediaDevices.getUserMedia({ video: { deviceId: { exact: id } } });
+    const cap = tmp.getVideoTracks()[0].getCapabilities(); tmp.getTracks().forEach(t => t.stop());
+
+    const resList = (cap.width?.max)
+      ? COMMON.filter(r => r[0] <= cap.width.max && r[1] <= cap.height.max)
+      : COMMON.slice();
+
+    if (!resList.length) resList.push([cap.width.max, cap.height.max]);
+
+    resList.forEach(r => resSel.add(new Option(`${r[0]}×${r[1]}`, `${r[0]}x${r[1]}`)));
+    resSel.value = resSel.querySelector('option[value="1920x1080"]') ? '1920x1080' : resSel.options[0].value;
+    await buildFPS();
+  }
+
+  async function buildFPS() {
+    fpsSel.innerHTML = '';
+    const id = devSel.value; const [w, h] = resSel.value.split('x').map(Number);
+    const tmp = await navigator.mediaDevices.getUserMedia({ video: { deviceId: { exact: id }, width: { exact: w }, height: { exact: h } } });
+    const cap = tmp.getVideoTracks()[0].getCapabilities(); tmp.getTracks().forEach(t => t.stop());
+
+    const list = (cap.frameRate?.max)
+      ? [120, 90, 60, 30, 24, 15].filter(f => f <= Math.round(cap.frameRate.max))
+      : [60, 30];
+
+    if (!list.length) list.push(Math.round(cap.frameRate.max));
+
+    list.forEach(f => fpsSel.add(new Option(f + ' fps', f)));
+    fpsSel.value = list.includes(60) ? '60' : fpsSel.options[0].value;
+    await startStream();
+  }
+
+  /* ---------- 开流 ---------- */
+  async function startStream() {
+    const id = devSel.value; if (!id) return;
+    const [w, h] = resSel.value.split('x').map(Number); const fps = Number(fpsSel.value);
+    if (video.srcObject) video.srcObject.getTracks().forEach(t => t.stop());
+
+    try {
+      const s = await navigator.mediaDevices.getUserMedia({
+        video: { deviceId: { exact: id }, width: { exact: w }, height: { exact: h }, frameRate: { ideal: fps } }, audio: false
+      });
+      video.srcObject = s; return;
+    } catch (e) { console.warn('ideal fps 失败，尝试不指定 fps', e); }
+
+    try {
+      const s = await navigator.mediaDevices.getUserMedia({
+        video: { deviceId: { exact: id }, width: { exact: w }, height: { exact: h } }, audio: false
+      });
+      video.srcObject = s;
+    } catch (e) { console.error('开流失败', e); alert('无法开启此分辨率'); }
+  }
+
+  /* ---------- 顶栏显隐 ---------- */
+  function showBar() { controls.style.display = 'flex'; controls.style.opacity = 1; }
+  function hideBar() { controls.style.opacity = 0; setTimeout(() => controls.style.display = 'none', 250); }
+
+  document.addEventListener('mousemove', () => {
+    if (!document.fullscreenElement) return;
+    showBar(); clearTimeout(hideTimer);
+    hideTimer = setTimeout(hideBar, 2000);
+  });
+
+  document.addEventListener('fullscreenchange', () => {
+    if (document.fullscreenElement) {
+      showBar();
+      clearTimeout(hideTimer);
+      hideTimer = setTimeout(hideBar, 2000);
+    } else {                     /* 退出全屏：确保顶栏可见 */
+      clearTimeout(hideTimer);
+      showBar();
     }
- 
-    // 2. 若无任何权限，先最小化地申请一次，避免空列表
-    async function ensurePermission() {
-        try {
-            await navigator.mediaDevices.getUserMedia({video:true, audio:false});
-        } catch (e) {
-            console.error('未能取得摄像头权限：', e);
-            alert('需要摄像头权限才能列出设备，请允许后刷新页面');
-            throw e;
-        }
-    }
- 
-    // 3. 列举并填充下拉框
-    async function populate() {
-        const devices = await navigator.mediaDevices.enumerateDevices();
-        const cams    = devices.filter(d => d.kind === 'videoinput');
- 
-        select.innerHTML = '';
-        cams.forEach((cam, i) => {
-            const opt = document.createElement('option');
-            opt.value = cam.deviceId;
-            opt.textContent = cam.label || `Camera ${i+1}`;
-            select.appendChild(opt);
-        });
- 
-        // 恢复首选
-        const saved = localStorage.getItem(SAVEKEY);
-        if (saved && cams.some(c => c.deviceId === saved)) select.value = saved;
- 
-        // 自动开流
-        startStream(select.value || cams[0]?.deviceId);
-    }
- 
-    // 4. 启动视频流
-    async function startStream(id) {
-        if (!id) { console.warn('无可用摄像头'); return; }
-        const stream = await navigator.mediaDevices.getUserMedia({
-            video:{deviceId:{exact:id}, width:{ideal:1920}, height:{ideal:1080}, frameRate:{ideal:60}},
-            audio:false
-        });
-        video.srcObject = stream;
-        localStorage.setItem(SAVEKEY, id);
-    }
- 
-    // 5. 事件绑定
-    select.onchange = () => startStream(select.value);
-    fsBtn.onclick   = () =>
-        document.fullscreenElement ? document.exitFullscreen()
-                                   : document.documentElement.requestFullscreen().catch(console.error);
-    document.addEventListener('fullscreenchange', () => {
-        fsBtn.textContent = document.fullscreenElement ? '退出全屏' : '进入全屏';
-    });
- 
-    // 6. 设备插拔动态刷新
-    navigator.mediaDevices.addEventListener('devicechange', populate);
- 
-    // == 启动流程 ==
-    await ensurePermission();
-    await populate();
+    fsBtn.textContent = document.fullscreenElement ? '退出全屏' : '进入全屏';
+  });
+
+  /* ---------- 事件绑定 ---------- */
+  devSel.onchange = () => buildResFPS();
+  resSel.onchange = () => buildFPS();
+  fpsSel.onchange = () => startStream();
+  refreshBtn.onclick = listDevices;
+  fsBtn.onclick = () =>
+    document.fullscreenElement
+      ? document.exitFullscreen()
+      : document.documentElement.requestFullscreen().catch(console.error);
+
+  navigator.mediaDevices.addEventListener('devicechange', listDevices);
+
+  /* ---------- 启动 ---------- */
+  await listDevices();
 })();
 </script>
 </body>
