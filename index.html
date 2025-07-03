@@ -112,20 +112,14 @@
   function hideBar() { controls.style.opacity = 0; setTimeout(() => controls.style.display = 'none', 250); }
 
   document.addEventListener('mousemove', () => {
-    if (!document.fullscreenElement) return;
     showBar(); clearTimeout(hideTimer);
     hideTimer = setTimeout(hideBar, 2000);
   });
 
   document.addEventListener('fullscreenchange', () => {
-    if (document.fullscreenElement) {
-      showBar();
-      clearTimeout(hideTimer);
-      hideTimer = setTimeout(hideBar, 2000);
-    } else {                     /* 退出全屏：确保顶栏可见 */
-      clearTimeout(hideTimer);
-      showBar();
-    }
+    showBar();
+    clearTimeout(hideTimer);
+    hideTimer = setTimeout(hideBar, 2000);
     fsBtn.textContent = document.fullscreenElement ? '退出全屏' : '进入全屏';
   });
 
