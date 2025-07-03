@@ -96,7 +96,9 @@
       const s = await navigator.mediaDevices.getUserMedia({
         video: { deviceId: { exact: id }, width: { exact: w }, height: { exact: h }, frameRate: { ideal: fps } }, audio: false
       });
-      video.srcObject = s; return;
+      video.srcObject = s;
+      startHideTimer();
+      return;
     } catch (e) { console.warn('ideal fps 失败，尝试不指定 fps', e); }
 
     try {
@@ -104,6 +106,7 @@
         video: { deviceId: { exact: id }, width: { exact: w }, height: { exact: h } }, audio: false
       });
       video.srcObject = s;
+      startHideTimer();
     } catch (e) { console.error('开流失败', e); alert('无法开启此分辨率'); }
   }
 
@@ -111,15 +114,18 @@
   function showBar() { controls.style.display = 'flex'; controls.style.opacity = 1; }
   function hideBar() { controls.style.opacity = 0; setTimeout(() => controls.style.display = 'none', 250); }
 
-  document.addEventListener('mousemove', () => {
-    showBar(); clearTimeout(hideTimer);
+  function startHideTimer() {
+    clearTimeout(hideTimer);
     hideTimer = setTimeout(hideBar, 2000);
+  }
+
+  document.addEventListener('mousemove', () => {
+    showBar(); startHideTimer();
   });
 
   document.addEventListener('fullscreenchange', () => {
     showBar();
-    clearTimeout(hideTimer);
-    hideTimer = setTimeout(hideBar, 2000);
+    startHideTimer();
     fsBtn.textContent = document.fullscreenElement ? '退出全屏' : '进入全屏';
   });
 
